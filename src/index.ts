@@ -13,14 +13,28 @@ import {
   type SessionInfo,
 } from "./sessions";
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+let rl: readline.Interface | null = null;
+
+function getReadline(): readline.Interface {
+  if (!rl) {
+    rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+  }
+  return rl;
+}
+
+function closeReadline(): void {
+  if (rl) {
+    closeReadline();
+    rl = null;
+  }
+}
 
 function prompt(question: string): Promise<string> {
   return new Promise((resolve) => {
-    rl.question(question, (answer) => {
+    getReadline().question(question, (answer) => {
       resolve(answer);
     });
   });
@@ -32,27 +46,37 @@ publish-claude - Export Claude Code sessions to markdown
 
 Usage:
   publish-claude                     Interactive mode: list sessions and pick one
-  publish-claude list                List all sessions
+  publish-claude list [--all]        List sessions (current directory by default)
   publish-claude print <session-id>  Print a session to stdout as markdown
   publish-claude export <session-id> [output-file]
                                      Export a session to a markdown file
   publish-claude gist <session-id>   Create a GitHub gist (requires gh CLI)
   publish-claude --help              Show this help message
 
+Options:
+  --all                              Show sessions from all projects, not just current directory
+
 Examples:
   publish-claude
   publish-claude list
+  publish-claude list --all
   publish-claude print a3c97c84-8c6c-4e11-8634-8794688ba6e1
   publish-claude export a3c97c84-8c6c-4e11-8634-8794688ba6e1 session.md
   publish-claude gist a3c97c84-8c6c-4e11-8634-8794688ba6e1
 `);
 }
 
-async function handleList(): Promise<void> {
-  const sessions = await listSessions();
+async function handleList(showAll: boolean): Promise<void> {
+  const filterPath = showAll ? undefined : process.cwd();
+  const sessions = await listSessions(filterPath);
 
   if (sessions.length === 0) {
-    console.log("No sessions found.");
+    if (showAll) {
+      console.log("No sessions found.");
+    } else {
+      console.log("No sessions found in current directory.");
+      console.log("Use --all to show sessions from all projects.");
+    }
     return;
   }
 
@@ -201,24 +225,65 @@ async function promptForFilename(defaultName: string): Promise<string> {
   return answer.trim() || defaultName;
 }
 
-async function interactiveMode(): Promise<void> {
-  const sessions = await listSessions();
+async function promptForSession(
+  sessions: SessionInfo[],
+  canShowAll: boolean
+): Promise<number> {
+  const hint = canShowAll ? ", or 'a' to show all projects" : "";
+  let question = `Select a session (1-${sessions.length}${hint}): `;
+
+  while (true) {
+    const answer = await prompt(question);
+    const trimmed = answer.trim().toLowerCase();
+
+    if (canShowAll && trimmed === "a") {
+      // Return -1 to signal "show all"
+      return -1;
+    }
+
+    const num = parseInt(trimmed, 10);
+    if (!isNaN(num) && num >= 1 && num <= sessions.length) {
+      return num;
+    }
+
+    question = `Please enter 1-${sessions.length}${hint}: `;
+  }
+}
+
+async function interactiveMode(showAll: boolean): Promise<void> {
+  const filterPath = showAll ? undefined : process.cwd();
+  let sessions = await listSessions(filterPath);
 
   if (sessions.length === 0) {
-    console.log("No sessions found.");
-    rl.close();
-    return;
+    if (showAll) {
+      console.log("No sessions found.");
+      closeReadline();
+      return;
+    } else {
+      console.log("No sessions found in current directory. Showing all sessions.\n");
+      sessions = await listSessions();
+      if (sessions.length === 0) {
+        console.log("No sessions found.");
+        closeReadline();
+        return;
+      }
+    }
   }
 
   console.log("\nClaude Code Sessions\n");
-  console.log(formatSessionsTable(sessions));
+  console.log(formatSessionsTable(sessions, false));
   console.log();
 
-  const selection = await promptForNumber(
-    `Select a session (1-${sessions.length}): `,
-    1,
-    sessions.length
-  );
+  let selection = await promptForSession(sessions, !showAll);
+
+  // If user chose "all", reload and re-prompt
+  if (selection === -1) {
+    sessions = await listSessions();
+    console.log("\nAll Sessions\n");
+    console.log(formatSessionsTable(sessions, false));
+    console.log();
+    selection = await promptForSession(sessions, false);
+  }
 
   const selectedSession = sessions[selection - 1];
   console.log(`\nSelected: ${selectedSession.sessionId}`);
@@ -234,14 +299,14 @@ async function interactiveMode(): Promise<void> {
   const result = findSessionFile(selectedSession.sessionId);
   if (!result) {
     console.error("Session file not found.");
-    rl.close();
+    closeReadline();
     process.exit(1);
   }
 
   const messages = await parseSession(result.filePath);
   if (messages.length === 0) {
     console.error("No messages found in session.");
-    rl.close();
+    closeReadline();
     process.exit(1);
   }
 
@@ -270,23 +335,25 @@ async function interactiveMode(): Promise<void> {
     } catch (error) {
       console.error(`\nFailed to create gist: ${(error as Error).message}`);
       console.error("Make sure you have the gh CLI installed and authenticated.");
-      rl.close();
+      closeReadline();
       process.exit(1);
     }
   }
 
-  rl.close();
+  closeReadline();
 }
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  const showAll = args.includes("--all");
+  const filteredArgs = args.filter((arg) => arg !== "--all");
 
-  if (args.length === 0) {
-    await interactiveMode();
+  if (filteredArgs.length === 0) {
+    await interactiveMode(showAll);
     return;
   }
 
-  const command = args[0];
+  const command = filteredArgs[0];
 
   switch (command) {
     case "--help":
@@ -297,34 +364,34 @@ async function main(): Promise<void> {
 
     case "list":
     case "ls":
-      await handleList();
+      await handleList(showAll);
       break;
 
     case "print":
-      if (!args[1]) {
+      if (!filteredArgs[1]) {
         console.error("Error: session-id is required");
         console.error("Usage: publish-claude print <session-id>");
         process.exit(1);
       }
-      await handlePrint(args[1]);
+      await handlePrint(filteredArgs[1]);
       break;
 
     case "export":
-      if (!args[1]) {
+      if (!filteredArgs[1]) {
         console.error("Error: session-id is required");
         console.error("Usage: publish-claude export <session-id> [output-file]");
         process.exit(1);
       }
-      await handleExport(args[1], args[2]);
+      await handleExport(filteredArgs[1], filteredArgs[2]);
       break;
 
     case "gist":
-      if (!args[1]) {
+      if (!filteredArgs[1]) {
         console.error("Error: session-id is required");
         console.error("Usage: publish-claude gist <session-id> [--public]");
         process.exit(1);
       }
-      await handleGist(args[1], args.includes("--public"));
+      await handleGist(filteredArgs[1], args.includes("--public"));
       break;
 
     default:

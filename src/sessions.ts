@@ -32,11 +32,39 @@ export interface SessionInfo {
   filePath: string;
   date: string;
   messageCount: number;
-  firstUserMessage: string;
+  summary: string;
+}
+
+function encodeProjectPath(path: string): string {
+  return path.replace(/\//g, "-");
 }
 
 function decodeProjectPath(encoded: string): string {
-  return encoded.replace(/-/g, "/");
+  // Claude's encoding is lossy (- could be / or literal -)
+  // Try to find the actual path by checking if it exists
+  const simple = encoded.replace(/-/g, "/");
+  if (existsSync(simple)) {
+    return simple;
+  }
+
+  // Try to reconstruct by checking each segment
+  const parts = encoded.split("-").filter(Boolean);
+  let path = "";
+  for (const part of parts) {
+    const withSlash = path + "/" + part;
+    const withDash = path ? path + "-" + part : part;
+
+    if (existsSync(withSlash)) {
+      path = withSlash;
+    } else if (path && existsSync(withDash)) {
+      path = withDash;
+    } else {
+      // Default to slash if we can't determine
+      path = withSlash;
+    }
+  }
+
+  return path || simple;
 }
 
 export function getClaudeProjectsDir(): string {
@@ -72,11 +100,25 @@ export function findSessionFile(
   return null;
 }
 
-async function getFirstUserMessage(filePath: string): Promise<string> {
+async function getSessionSummary(filePath: string): Promise<string> {
   const file = Bun.file(filePath);
   const text = await file.text();
   const lines = text.split("\n");
 
+  // First, look for a summary line
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const parsed = JSON.parse(line);
+      if (parsed.type === "summary" && parsed.summary) {
+        return parsed.summary;
+      }
+    } catch {
+      // Skip invalid JSON lines
+    }
+  }
+
+  // Fall back to first user message if no summary
   for (const line of lines) {
     if (!line.trim()) continue;
     try {
@@ -94,7 +136,7 @@ async function getFirstUserMessage(filePath: string): Promise<string> {
           ) {
             continue;
           }
-          return content.slice(0, 60) + (content.length > 60 ? "..." : "");
+          return content.slice(0, 80) + (content.length > 80 ? "..." : "");
         }
       }
     } catch {
@@ -146,7 +188,7 @@ async function getSessionDate(filePath: string): Promise<string> {
   return "";
 }
 
-export async function listSessions(): Promise<SessionInfo[]> {
+export async function listSessions(filterPath?: string): Promise<SessionInfo[]> {
   const claudeDir = getClaudeProjectsDir();
   const sessions: SessionInfo[] = [];
 
@@ -164,6 +206,16 @@ export async function listSessions(): Promise<SessionInfo[]> {
 
     const files = readdirSync(projectPath);
 
+    // Filter by path if specified (compare encoded paths to avoid lossy decode issues)
+    if (filterPath) {
+      const encodedFilter = encodeProjectPath(filterPath);
+      if (!projectDir.startsWith(encodedFilter)) {
+        continue;
+      }
+    }
+
+    const decodedProjectPath = decodeProjectPath(projectDir);
+
     for (const file of files) {
       // Skip agent files, only process UUID.jsonl files
       if (!file.endsWith(".jsonl") || file.startsWith("agent-")) continue;
@@ -171,19 +223,19 @@ export async function listSessions(): Promise<SessionInfo[]> {
       const sessionId = file.replace(".jsonl", "");
       const filePath = join(projectPath, file);
 
-      const [date, messageCount, firstUserMessage] = await Promise.all([
+      const [date, messageCount, summary] = await Promise.all([
         getSessionDate(filePath),
         countMessages(filePath),
-        getFirstUserMessage(filePath),
+        getSessionSummary(filePath),
       ]);
 
       sessions.push({
         sessionId,
-        projectPath: decodeProjectPath(projectDir),
+        projectPath: decodedProjectPath,
         filePath,
         date,
         messageCount,
-        firstUserMessage,
+        summary,
       });
     }
   }
@@ -353,19 +405,35 @@ export function truncate(str: string, len: number): string {
   return str.slice(0, len - 3) + "...";
 }
 
-export function formatSessionsTable(sessions: SessionInfo[]): string {
+export function formatSessionsTable(
+  sessions: SessionInfo[],
+  showSessionId: boolean = true
+): string {
   const lines: string[] = [];
 
-  lines.push(
-    `${"#".padEnd(4)}| ${"Session ID".padEnd(38)}| ${"Project".padEnd(30)}| ${"Date".padEnd(12)}| ${"Msgs".padEnd(5)}| First Message`
-  );
-  lines.push("-".repeat(130));
-
-  sessions.forEach((session, index) => {
+  if (showSessionId) {
     lines.push(
-      `${String(index + 1).padEnd(4)}| ${session.sessionId.padEnd(38)}| ${truncate(session.projectPath, 30)}| ${formatDate(session.date).padEnd(12)}| ${String(session.messageCount).padEnd(5)}| ${session.firstUserMessage}`
+      `${"#".padEnd(4)}| ${"Session ID".padEnd(38)}| ${"Project".padEnd(30)}| ${"Date".padEnd(12)}| ${"Msgs".padEnd(5)}| Summary`
     );
-  });
+    lines.push("-".repeat(130));
+
+    sessions.forEach((session, index) => {
+      lines.push(
+        `${String(index + 1).padEnd(4)}| ${session.sessionId.padEnd(38)}| ${truncate(session.projectPath, 30)}| ${formatDate(session.date).padEnd(12)}| ${String(session.messageCount).padEnd(5)}| ${session.summary}`
+      );
+    });
+  } else {
+    lines.push(
+      `${"#".padEnd(4)}| ${"Project".padEnd(35)}| ${"Date".padEnd(12)}| ${"Msgs".padEnd(5)}| Summary`
+    );
+    lines.push("-".repeat(100));
+
+    sessions.forEach((session, index) => {
+      lines.push(
+        `${String(index + 1).padEnd(4)}| ${truncate(session.projectPath, 35)}| ${formatDate(session.date).padEnd(12)}| ${String(session.messageCount).padEnd(5)}| ${session.summary}`
+      );
+    });
+  }
 
   lines.push(`\nTotal: ${sessions.length} sessions`);
 
