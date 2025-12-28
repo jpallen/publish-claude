@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 
+import * as readline from "readline";
 import {
   listSessions,
   findSessionFile,
@@ -8,6 +9,19 @@ import {
   formatSessionsTable,
   type SessionInfo,
 } from "./sessions";
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+});
+
+function prompt(question: string): Promise<string> {
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      resolve(answer);
+    });
+  });
+}
 
 function printUsage(): void {
   console.log(`
@@ -89,32 +103,23 @@ async function handleExport(
 }
 
 async function promptForNumber(
-  prompt: string,
+  question: string,
   min: number,
   max: number
 ): Promise<number> {
-  process.stdout.write(prompt);
-
-  for await (const line of console) {
-    const num = parseInt(line.trim(), 10);
+  while (true) {
+    const answer = await prompt(question);
+    const num = parseInt(answer.trim(), 10);
     if (!isNaN(num) && num >= min && num <= max) {
       return num;
     }
-    process.stdout.write(`Please enter a number between ${min} and ${max}: `);
+    question = `Please enter a number between ${min} and ${max}: `;
   }
-
-  throw new Error("No input received");
 }
 
 async function promptForFilename(defaultName: string): Promise<string> {
-  process.stdout.write(`Output file [${defaultName}]: `);
-
-  for await (const line of console) {
-    const input = line.trim();
-    return input || defaultName;
-  }
-
-  return defaultName;
+  const answer = await prompt(`Output file [${defaultName}]: `);
+  return answer.trim() || defaultName;
 }
 
 async function interactiveMode(): Promise<void> {
@@ -122,6 +127,7 @@ async function interactiveMode(): Promise<void> {
 
   if (sessions.length === 0) {
     console.log("No sessions found.");
+    rl.close();
     return;
   }
 
@@ -145,12 +151,14 @@ async function interactiveMode(): Promise<void> {
   const result = findSessionFile(selectedSession.sessionId);
   if (!result) {
     console.error("Session file not found.");
+    rl.close();
     process.exit(1);
   }
 
   const messages = await parseSession(result.filePath);
   if (messages.length === 0) {
     console.error("No messages found in session.");
+    rl.close();
     process.exit(1);
   }
 
@@ -162,6 +170,7 @@ async function interactiveMode(): Promise<void> {
 
   await Bun.write(filename, markdown);
   console.log(`\nExported session to: ${filename}`);
+  rl.close();
 }
 
 async function main(): Promise<void> {
