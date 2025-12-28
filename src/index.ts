@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import * as readline from "readline";
-import { spawn } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -10,6 +9,7 @@ import {
   parseSession,
   formatSessionToMarkdown,
   formatSessionsTable,
+  getSessionSummary,
   type SessionInfo,
 } from "./sessions";
 
@@ -93,14 +93,17 @@ async function handlePrint(sessionId: string): Promise<void> {
   }
 
   const { filePath, projectPath } = result;
-  const messages = await parseSession(filePath);
+  const [messages, summary] = await Promise.all([
+    parseSession(filePath),
+    getSessionSummary(filePath),
+  ]);
 
   if (messages.length === 0) {
     console.error("No messages found in session.");
     process.exit(1);
   }
 
-  const markdown = formatSessionToMarkdown(sessionId, projectPath, messages);
+  const markdown = formatSessionToMarkdown(sessionId, projectPath, messages, summary);
   console.log(markdown);
 }
 
@@ -117,14 +120,17 @@ async function handleExport(
   }
 
   const { filePath, projectPath } = result;
-  const messages = await parseSession(filePath);
+  const [messages, summary] = await Promise.all([
+    parseSession(filePath),
+    getSessionSummary(filePath),
+  ]);
 
   if (messages.length === 0) {
     console.error("No messages found in session.");
     process.exit(1);
   }
 
-  const markdown = formatSessionToMarkdown(sessionId, projectPath, messages);
+  const markdown = formatSessionToMarkdown(sessionId, projectPath, messages, summary);
 
   const filename = outputFile || `session-${sessionId}.md`;
   await Bun.write(filename, markdown);
@@ -136,37 +142,25 @@ async function createGist(
   description: string,
   isPublic: boolean
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const args = ["gist", "create", filename, "--desc", description];
-    if (isPublic) {
-      args.push("--public");
-    }
+  const args = ["gist", "create", filename, "--desc", description];
+  if (isPublic) {
+    args.push("--public");
+  }
 
-    const proc = spawn("gh", args, { stdio: ["inherit", "pipe", "pipe"] });
-
-    let stdout = "";
-    let stderr = "";
-
-    proc.stdout.on("data", (data) => {
-      stdout += data.toString();
-    });
-
-    proc.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve(stdout.trim());
-      } else {
-        reject(new Error(stderr || `gh exited with code ${code}`));
-      }
-    });
-
-    proc.on("error", (err) => {
-      reject(new Error(`Failed to run gh CLI: ${err.message}`));
-    });
+  const proc = Bun.spawn(["gh", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
   });
+
+  const stdout = await new Response(proc.stdout).text();
+  const stderr = await new Response(proc.stderr).text();
+  const exitCode = await proc.exited;
+
+  if (exitCode !== 0) {
+    throw new Error(stderr || `gh exited with code ${exitCode}`);
+  }
+
+  return stdout.trim();
 }
 
 async function handleGist(
@@ -182,23 +176,24 @@ async function handleGist(
   }
 
   const { filePath, projectPath } = result;
-  const messages = await parseSession(filePath);
+  const [messages, summary] = await Promise.all([
+    parseSession(filePath),
+    getSessionSummary(filePath),
+  ]);
 
   if (messages.length === 0) {
     console.error("No messages found in session.");
     process.exit(1);
   }
 
-  const markdown = formatSessionToMarkdown(sessionId, projectPath, messages);
+  const markdown = formatSessionToMarkdown(sessionId, projectPath, messages, summary);
 
   // Write to temp file
   const tempFile = join(tmpdir(), `claude-session-${sessionId}.md`);
   await Bun.write(tempFile, markdown);
 
   // Create gist
-  const date = new Date().toISOString().split("T")[0];
-  const description = `Claude Code Session - ${projectPath} - ${date}`;
-
+  const description = summary || `Claude Code Session`;
   const gistUrl = await createGist(tempFile, description, isPublic);
   console.log(`Created gist: ${gistUrl}`);
 
@@ -313,7 +308,8 @@ async function interactiveMode(showAll: boolean): Promise<void> {
   const markdown = formatSessionToMarkdown(
     selectedSession.sessionId,
     selectedSession.projectPath,
-    messages
+    messages,
+    selectedSession.summary
   );
 
   if (action === 1) {
@@ -326,21 +322,13 @@ async function interactiveMode(showAll: boolean): Promise<void> {
     const tempFile = join(tmpdir(), `claude-session-${selectedSession.sessionId}.md`);
     await Bun.write(tempFile, markdown);
 
-    const date = new Date().toISOString().split("T")[0];
-    const description = `Claude Code Session - ${selectedSession.projectPath} - ${date}`;
+    const description = selectedSession.summary || `Claude Code Session`;
 
-    try {
-      const gistUrl = await createGist(tempFile, description, isPublic);
-      console.log(`\nCreated gist: ${gistUrl}`);
-    } catch (error) {
-      console.error(`\nFailed to create gist: ${(error as Error).message}`);
-      console.error("Make sure you have the gh CLI installed and authenticated.");
-      closeReadline();
-      process.exit(1);
-    }
+    const gistUrl = await createGist(tempFile, description, isPublic);
+    console.log(`\nCreated gist: ${gistUrl}`);
   }
 
-  closeReadline();
+  process.exit(0);
 }
 
 async function main(): Promise<void> {

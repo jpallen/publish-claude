@@ -100,7 +100,7 @@ export function findSessionFile(
   return null;
 }
 
-async function getSessionSummary(filePath: string): Promise<string> {
+export async function getSessionSummary(filePath: string): Promise<string> {
   const file = Bun.file(filePath);
   const text = await file.text();
   const lines = text.split("\n");
@@ -248,82 +248,117 @@ export async function listSessions(filterPath?: string): Promise<SessionInfo[]> 
   return sessions;
 }
 
-function formatContentBlock(block: ContentBlock): string {
+interface FormattedBlock {
+  text: string;
+  isHidden: boolean;
+  label?: string;
+}
+
+function formatContentBlock(block: ContentBlock): FormattedBlock {
   switch (block.type) {
     case "text":
-      return block.text || "";
+      return { text: block.text || "", isHidden: false };
 
     case "thinking":
-      return `<details>\n<summary>Thinking</summary>\n\n${block.thinking || ""}\n\n</details>\n`;
+      return {
+        text: `**Thinking:** ${block.thinking || ""}`,
+        isHidden: true,
+        label: "Thinking",
+      };
 
-    case "tool_use":
-      return `**Tool Use: ${block.name}**\n\`\`\`json\n${JSON.stringify(block.input, null, 2)}\n\`\`\`\n`;
+    case "tool_use": {
+      const input = JSON.stringify(block.input, null, 2);
+      return {
+        text: `**Tool: ${block.name}**\n\`\`\`json\n${input}\n\`\`\``,
+        isHidden: true,
+        label: block.name || "Tool",
+      };
+    }
 
     case "tool_result": {
       const content = block.content;
+      let resultText = "";
       if (typeof content === "string") {
-        const truncated =
-          content.length > 500
-            ? content.slice(0, 500) + "\n... (truncated)"
-            : content;
-        return `**Tool Result:**\n\`\`\`\n${truncated}\n\`\`\`\n`;
-      }
-      if (Array.isArray(content)) {
-        return content
+        resultText = content.length > 1000
+          ? content.slice(0, 1000) + "\n... (truncated)"
+          : content;
+      } else if (Array.isArray(content)) {
+        resultText = content
           .map((c) => {
             if (typeof c === "object" && c.type === "text") {
               const text = (c as ContentBlock).text || "";
-              const truncated =
-                text.length > 500
-                  ? text.slice(0, 500) + "\n... (truncated)"
-                  : text;
-              return `**Tool Result:**\n\`\`\`\n${truncated}\n\`\`\`\n`;
+              return text.length > 1000
+                ? text.slice(0, 1000) + "\n... (truncated)"
+                : text;
             }
             return "";
           })
+          .filter(Boolean)
           .join("\n");
       }
-      return "";
+      if (!resultText) return { text: "", isHidden: true, label: "Result" };
+      return {
+        text: `**Result:**\n\`\`\`\n${resultText}\n\`\`\``,
+        isHidden: true,
+        label: "Result",
+      };
     }
 
     default:
-      return "";
+      return { text: "", isHidden: false };
   }
 }
 
-function formatMessage(msg: SessionMessage): string {
-  const role = msg.type === "user" ? "User" : "Assistant";
+interface FormattedMessage {
+  visible: string;
+  hidden: string;
+  hiddenLabels: string[];
+  isUser: boolean;
+}
+
+function formatMessage(msg: SessionMessage): FormattedMessage {
+  const isUser = msg.type === "user";
   const content = msg.message.content;
 
-  let formattedContent = "";
+  let textParts: string[] = [];
+  let hiddenParts: string[] = [];
+  let hiddenLabels: string[] = [];
 
   if (typeof content === "string") {
     if (
       content.startsWith("<command-name>") ||
       content.startsWith("<local-command-stdout>")
     ) {
-      return "";
+      return { visible: "", hidden: "", hiddenLabels: [], isUser };
     }
-    formattedContent = content;
+    textParts.push(content);
   } else if (Array.isArray(content)) {
-    const parts: string[] = [];
-
     for (const block of content) {
       const formatted = formatContentBlock(block as ContentBlock);
-      if (formatted) {
-        parts.push(formatted);
+      if (formatted.text) {
+        if (formatted.isHidden) {
+          hiddenParts.push(formatted.text);
+          if (formatted.label) {
+            hiddenLabels.push(formatted.label);
+          }
+        } else {
+          textParts.push(formatted.text);
+        }
       }
     }
-
-    formattedContent = parts.join("\n\n");
   }
 
-  if (!formattedContent.trim()) {
-    return "";
-  }
+  const visibleText = textParts.join("\n\n");
+  const hiddenText = hiddenParts.join("\n\n");
 
-  const timestamp = new Date(msg.timestamp).toLocaleString();
-  return `## ${role}\n*${timestamp}*\n\n${formattedContent}`;
+  // User messages as blockquotes (wraps text in GitHub markdown)
+  const visible = visibleText
+    ? isUser
+      ? visibleText.split("\n").map(line => `> ${line}`).join("\n")
+      : visibleText
+    : "";
+
+  return { visible, hidden: hiddenText, hiddenLabels, isUser };
 }
 
 export async function parseSession(filePath: string): Promise<SessionMessage[]> {
@@ -364,31 +399,65 @@ export async function parseSession(filePath: string): Promise<SessionMessage[]> 
 export function formatSessionToMarkdown(
   sessionId: string,
   projectPath: string,
-  messages: SessionMessage[]
+  messages: SessionMessage[],
+  summary?: string
 ): string {
   if (messages.length === 0) {
     return "";
   }
 
-  const firstMessage = messages[0];
-  const sessionDate = new Date(firstMessage.timestamp).toLocaleString();
-
   const lines: string[] = [];
 
-  // Header
-  lines.push(`# Session: ${sessionId}\n`);
-  lines.push(`**Project:** ${projectPath}`);
-  lines.push(`**Date:** ${sessionDate}`);
-  lines.push(`**Messages:** ${messages.length}`);
-  lines.push("\n---\n");
+  // Title - use summary if available
+  const title = summary || `Session ${sessionId.slice(0, 8)}`;
+  lines.push(`# ${title}\n`);
 
-  // Messages
-  for (const msg of messages) {
-    const formatted = formatMessage(msg);
-    if (formatted) {
-      lines.push(formatted);
-      lines.push("\n---\n");
+  // Format all messages first
+  const formattedMessages = messages.map((msg) => formatMessage(msg));
+
+  // Group adjacent hidden content together
+  let pendingHidden: string[] = [];
+  let pendingLabels: string[] = [];
+  let isFirstUserMessage = true;
+
+  for (const msg of formattedMessages) {
+    if (msg.visible) {
+      // Add horizontal rule before user messages (except first)
+      if (msg.isUser) {
+        if (!isFirstUserMessage) {
+          lines.push("---\n");
+        }
+        isFirstUserMessage = false;
+      }
+
+      // Flush any pending hidden content first
+      if (pendingHidden.length > 0) {
+        const label = [...new Set(pendingLabels)].join(", ");
+        lines.push(`<details>\n<summary><em>${label}</em></summary>\n\n${pendingHidden.join("\n\n")}\n\n</details>`);
+        lines.push("");
+        pendingHidden = [];
+        pendingLabels = [];
+      }
+      // Add visible content
+      lines.push(msg.visible);
+      // Add this message's hidden content to pending
+      if (msg.hidden) {
+        pendingHidden.push(msg.hidden);
+        pendingLabels.push(...msg.hiddenLabels);
+      }
+      lines.push("");
+    } else if (msg.hidden) {
+      // No visible content, just accumulate hidden
+      pendingHidden.push(msg.hidden);
+      pendingLabels.push(...msg.hiddenLabels);
     }
+  }
+
+  // Flush any remaining hidden content
+  if (pendingHidden.length > 0) {
+    const label = [...new Set(pendingLabels)].join(", ");
+    lines.push(`<details>\n<summary><em>${label}</em></summary>\n\n${pendingHidden.join("\n\n")}\n\n</details>`);
+    lines.push("");
   }
 
   return lines.join("\n");
