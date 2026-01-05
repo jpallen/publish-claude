@@ -1,6 +1,6 @@
 {
   "name": "publish-claude",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "CLI tool to list and export Claude Code sessions to markdown",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --banner:js='#!/usr/bin/env node'",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js && echo '#!/usr/bin/env node' | cat - dist/index.js > dist/tmp.js && mv dist/tmp.js dist/index.js",
     "prepublishOnly": "npm run build",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"

@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import * as readline from "readline";
 import { spawn } from "child_process";
 import { writeFile } from "fs/promises";
