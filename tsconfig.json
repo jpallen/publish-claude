@@ -10,7 +10,7 @@
     "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "types": ["bun-types"],
+    "types": ["node"],
     "lib": ["ESNext"],
     "outDir": "dist",
     "rootDir": "src"

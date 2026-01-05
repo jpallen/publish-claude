@@ -1,6 +1,8 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import * as readline from "readline";
+import { spawn } from "child_process";
+import { writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -133,7 +135,7 @@ async function handleExport(
   const markdown = formatSessionToMarkdown(sessionId, projectPath, messages, summary);
 
   const filename = outputFile || `session-${sessionId}.md`;
-  await Bun.write(filename, markdown);
+  await writeFile(filename, markdown);
   console.log(`Exported session to: ${filename}`);
 }
 
@@ -147,20 +149,32 @@ async function createGist(
     args.push("--public");
   }
 
-  const proc = Bun.spawn(["gh", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
+  return new Promise((resolve, reject) => {
+    const proc = spawn("gh", args, { stdio: ["ignore", "pipe", "pipe"] });
+
+    let stdout = "";
+    let stderr = "";
+
+    proc.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(stderr || `gh exited with code ${code}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+
+    proc.on("error", (err) => {
+      reject(err);
+    });
   });
-
-  const stdout = await new Response(proc.stdout).text();
-  const stderr = await new Response(proc.stderr).text();
-  const exitCode = await proc.exited;
-
-  if (exitCode !== 0) {
-    throw new Error(stderr || `gh exited with code ${exitCode}`);
-  }
-
-  return stdout.trim();
 }
 
 async function handleGist(
@@ -190,7 +204,7 @@ async function handleGist(
 
   // Write to temp file
   const tempFile = join(tmpdir(), `claude-session-${sessionId}.md`);
-  await Bun.write(tempFile, markdown);
+  await writeFile(tempFile, markdown);
 
   // Create gist
   const description = summary || `Claude Code Session`;
@@ -315,12 +329,12 @@ async function interactiveMode(showAll: boolean): Promise<void> {
   if (action === 1) {
     const defaultFilename = `session-${selectedSession.sessionId}.md`;
     const filename = await promptForFilename(defaultFilename);
-    await Bun.write(filename, markdown);
+    await writeFile(filename, markdown);
     console.log(`\nExported session to: ${filename}`);
   } else {
     const isPublic = action === 3;
     const tempFile = join(tmpdir(), `claude-session-${selectedSession.sessionId}.md`);
-    await Bun.write(tempFile, markdown);
+    await writeFile(tempFile, markdown);
 
     const description = selectedSession.summary || `Claude Code Session`;
 

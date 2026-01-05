@@ -1,4 +1,5 @@
 import { existsSync, readdirSync, statSync } from "fs";
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -101,8 +102,7 @@ export function findSessionFile(
 }
 
 export async function getSessionSummary(filePath: string): Promise<string> {
-  const file = Bun.file(filePath);
-  const text = await file.text();
+  const text = await readFile(filePath, "utf-8");
   const lines = text.split("\n");
 
   // First, look for a summary line
@@ -147,8 +147,7 @@ export async function getSessionSummary(filePath: string): Promise<string> {
 }
 
 async function countMessages(filePath: string): Promise<number> {
-  const file = Bun.file(filePath);
-  const text = await file.text();
+  const text = await readFile(filePath, "utf-8");
   const lines = text.split("\n");
 
   let count = 0;
@@ -170,8 +169,7 @@ async function countMessages(filePath: string): Promise<number> {
 }
 
 async function getSessionDate(filePath: string): Promise<string> {
-  const file = Bun.file(filePath);
-  const text = await file.text();
+  const text = await readFile(filePath, "utf-8");
   const lines = text.split("\n");
 
   for (const line of lines) {
@@ -297,8 +295,10 @@ function formatContentBlock(block: ContentBlock): FormattedBlock {
           .join("\n");
       }
       if (!resultText) return { text: "", isHidden: true, label: "Result" };
+      // Escape triple backticks to prevent breaking code fence
+      const escapedResult = resultText.replace(/```/g, "` ` `");
       return {
-        text: `**Result:**\n\`\`\`\n${resultText}\n\`\`\``,
+        text: `**Result:**\n\`\`\`\n${escapedResult}\n\`\`\``,
         isHidden: true,
         label: "Result",
       };
@@ -362,8 +362,7 @@ function formatMessage(msg: SessionMessage): FormattedMessage {
 }
 
 export async function parseSession(filePath: string): Promise<SessionMessage[]> {
-  const file = Bun.file(filePath);
-  const text = await file.text();
+  const text = await readFile(filePath, "utf-8");
   const lines = text.split("\n");
 
   const messages: SessionMessage[] = [];
@@ -396,6 +395,13 @@ export async function parseSession(filePath: string): Promise<SessionMessage[]> 
   return messages;
 }
 
+function formatDetailsBlock(content: string[], labels: string[]): string {
+  const label = [...new Set(labels)].join(", ");
+  // Escape all HTML to prevent interference with details block
+  const escapedContent = content.join("\n\n").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `<details>\n<summary><em>${label}</em></summary>\n\n${escapedContent}\n\n</details>`;
+}
+
 export function formatSessionToMarkdown(
   sessionId: string,
   projectPath: string,
@@ -408,21 +414,19 @@ export function formatSessionToMarkdown(
 
   const lines: string[] = [];
 
-  // Title - use summary if available
-  const title = summary || `Session ${sessionId.slice(0, 8)}`;
+  // Title - use summary if available, sanitize markdown chars
+  const rawTitle = summary || `Session ${sessionId.slice(0, 8)}`;
+  const title = rawTitle.replace(/[#\n\r]+$/g, "").trim();
   lines.push(`# ${title}\n`);
 
-  // Format all messages first
   const formattedMessages = messages.map((msg) => formatMessage(msg));
 
-  // Group adjacent hidden content together
   let pendingHidden: string[] = [];
   let pendingLabels: string[] = [];
   let isFirstUserMessage = true;
 
   for (const msg of formattedMessages) {
     if (msg.visible) {
-      // Add horizontal rule before user messages (except first)
       if (msg.isUser) {
         if (!isFirstUserMessage) {
           lines.push("---\n");
@@ -430,34 +434,26 @@ export function formatSessionToMarkdown(
         isFirstUserMessage = false;
       }
 
-      // Flush any pending hidden content first
       if (pendingHidden.length > 0) {
-        const label = [...new Set(pendingLabels)].join(", ");
-        lines.push(`<details>\n<summary><em>${label}</em></summary>\n\n${pendingHidden.join("\n\n")}\n\n</details>`);
-        lines.push("");
+        lines.push(formatDetailsBlock(pendingHidden, pendingLabels), "");
         pendingHidden = [];
         pendingLabels = [];
       }
-      // Add visible content
+
       lines.push(msg.visible);
-      // Add this message's hidden content to pending
       if (msg.hidden) {
         pendingHidden.push(msg.hidden);
         pendingLabels.push(...msg.hiddenLabels);
       }
       lines.push("");
     } else if (msg.hidden) {
-      // No visible content, just accumulate hidden
       pendingHidden.push(msg.hidden);
       pendingLabels.push(...msg.hiddenLabels);
     }
   }
 
-  // Flush any remaining hidden content
   if (pendingHidden.length > 0) {
-    const label = [...new Set(pendingLabels)].join(", ");
-    lines.push(`<details>\n<summary><em>${label}</em></summary>\n\n${pendingHidden.join("\n\n")}\n\n</details>`);
-    lines.push("");
+    lines.push(formatDetailsBlock(pendingHidden, pendingLabels), "");
   }
 
   return lines.join("\n");

@@ -6,11 +6,11 @@ Claude Code stores conversation history in `~/.claude/projects/` as JSONL files.
 
 ## Installation
 
-Requires [Bun](https://bun.sh).
-
 ```bash
-bun install
+npm install -g publish-claude
 ```
+
+Requires Node.js 18+.
 
 ## Usage
 
@@ -19,7 +19,7 @@ bun install
 Run without arguments to browse and select sessions:
 
 ```bash
-bun run dev
+publish-claude
 ```
 
 This will:
@@ -31,20 +31,20 @@ This will:
 
 ```bash
 # List sessions in current directory
-bun run dev list
+publish-claude list
 
 # List all sessions across all projects
-bun run dev list --all
+publish-claude list --all
 
 # Print session to stdout as markdown
-bun run dev print <session-id>
+publish-claude print <session-id>
 
 # Export to a markdown file
-bun run dev export <session-id> [output-file]
+publish-claude export <session-id> [output-file]
 
 # Create a GitHub gist (requires gh CLI to be installed and authenticated)
-bun run dev gist <session-id>
-bun run dev gist <session-id> --public
+publish-claude gist <session-id>
+publish-claude gist <session-id> --public
 ```
 
 ## Output Format
@@ -56,6 +56,22 @@ The generated markdown is optimized for readability:
 - **Assistant responses**: Plain markdown text
 - **Tool usage**: Tool calls, results, and thinking are grouped together and collapsed in expandable `<details>` sections, labeled with the tools used (e.g., "Bash, Read, Edit")
 - **Structure**: Horizontal rules separate each conversation turn
+
+## Development
+
+```bash
+# Install dependencies
+npm install
+
+# Run from source
+npm run dev
+
+# Type check
+npm run typecheck
+
+# Build
+npm run build
+```
 
 ## How It Works
 
