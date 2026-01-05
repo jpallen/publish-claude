@@ -34,8 +34,9 @@
     "export"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/jpallen/publish-claude",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yourusername/publish-claude.git"
+    "url": "git+ssh://git@github.com/jpallen/publish-claude.git"
   }
 }
